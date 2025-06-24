@@ -688,7 +688,6 @@ module openAi 'br/public:avm/res/cognitive-services/account:0.7.2' = if (isAzure
     sku: openAiSkuName
     deployments: openAiDeployments
     disableLocalAuth: azureOpenAiDisableKeys
-    restore: true
   }
 }
 
@@ -713,7 +712,6 @@ module documentIntelligence 'br/public:avm/res/cognitive-services/account:0.7.2'
     disableLocalAuth: true
     tags: tags
     sku: documentIntelligenceSkuName
-    restore: true
   }
 }
 
@@ -734,7 +732,6 @@ module computerVision 'br/public:avm/res/cognitive-services/account:0.7.2' = if 
     location: computerVisionResourceGroupLocation
     tags: tags
     sku: computerVisionSkuName
-    restore: true
   }
 }
 
@@ -757,7 +754,6 @@ module contentUnderstanding 'br/public:avm/res/cognitive-services/account:0.7.2'
     location: 'westus'
     tags: tags
     sku: 'S0'
-    restore: true
   }
 }
 
@@ -776,7 +772,6 @@ module speech 'br/public:avm/res/cognitive-services/account:0.7.2' = if (useSpee
     location: !empty(speechServiceLocation) ? speechServiceLocation : location
     tags: tags
     sku: speechServiceSkuName
-    restore: true
   }
 }
 module searchService 'core/search/search-services.bicep' = {
