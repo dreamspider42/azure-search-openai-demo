@@ -344,8 +344,36 @@ if __name__ == "__main__":
 
     if args.removeall:
         document_action = DocumentAction.RemoveAll
+        # Delete all .md5 files in data/ and subdirectories
+        import glob
+
+        md5_files = glob.glob(os.path.join(os.path.dirname(__file__), "../../data/**/*.md5"), recursive=True)
+        for md5_file in md5_files:
+            try:
+                os.remove(md5_file)
+                logger.info(f"Deleted {md5_file}")
+            except Exception as e:
+                logger.warning(f"Failed to delete {md5_file}: {e}")
+    elif args.remove and args.files:
+        document_action = DocumentAction.Remove
+        # Remove the .md5 file corresponding to the file specified
+        import glob
+        import os
+
+        # Get the base filename (e.g., foo.pdf -> foo.pdf.md5)
+        base_filename = os.path.basename(args.files)
+        md5_pattern = os.path.splitext(base_filename)[0] + os.path.splitext(base_filename)[1] + ".md5"
+        # Search for the .md5 file in data/ and subdirectories
+        md5_files = glob.glob(os.path.join(os.path.dirname(__file__), "../../data/**", md5_pattern), recursive=True)
+        for md5_file in md5_files:
+            try:
+                os.remove(md5_file)
+                logger.info(f"Deleted {md5_file}")
+            except Exception as e:
+                logger.warning(f"Failed to delete {md5_file}: {e}")
     elif args.remove:
         document_action = DocumentAction.Remove
+        logger.warning("No file specified for removal. Use --removeall to remove all files.")
     else:
         document_action = DocumentAction.Add
 
