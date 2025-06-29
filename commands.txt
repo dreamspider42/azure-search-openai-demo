@@ -1,0 +1,4 @@
+python ./scripts/manageacl.py -v --acl-type oids --acl-action add --acl f69e1c99-401c-40ea-903f-708496a680e1 --url https://stuqfl3wgnyzhy2.blob.core.windows.net/content/Benefit_Options.pdf
+python ./scripts/manageacl.py -v --acl-type oids --acl-action add --acl 56b80ef3-a8c4-41a2-bd2e-88a8e8979342 --url https://stuqfl3wgnyzhy2.blob.core.windows.net/content/Contoso_Electronics_Company_Overview.md
+python ./scripts/manageacl.py -v --acl-type oids --acl-action remove_all --url https://stuqfl3wgnyzhy2.blob.core.windows.net/content/Benefit_Options.pdf
+python ./scripts/manageacl.py -v --acl-type oids --acl-action remove_all --url https://stuqfl3wgnyzhy2.blob.core.windows.net/content/Contoso_Electronics_Company_Overview.md
