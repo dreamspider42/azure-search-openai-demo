@@ -6,6 +6,7 @@ from azure.search.documents.indexes._generated.models import (
     NativeBlobSoftDeleteDeletionDetectionPolicy,
 )
 from azure.search.documents.indexes.models import (
+    AIServicesAccountIdentity,
     AzureOpenAIEmbeddingSkill,
     BlobIndexerDataToExtract,
     BlobIndexerImageAction,
@@ -310,6 +311,11 @@ class IntegratedVectorizerStrategy(Strategy):
             skills=skills,
             index_projection=index_projection,
             knowledge_store=knowledge_store,
+            cognitive_services_account=AIServicesAccountIdentity(
+                subdomain_url="https://dreammultiservice.cognitiveservices.azure.com",
+                description="Multiservice cognitive services account",
+                identity=None
+            )
         )
 
         return skillset
