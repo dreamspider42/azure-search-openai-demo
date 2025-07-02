@@ -7,6 +7,9 @@ from azure.search.documents.indexes._generated.models import (
 )
 from azure.search.documents.indexes.models import (
     AzureOpenAIEmbeddingSkill,
+    BlobIndexerDataToExtract,
+    BlobIndexerImageAction,
+    BlobIndexerParsingMode,
     ChatCompletionSkill,
     DefaultCognitiveServicesAccount,
     DocumentIntelligenceLayoutSkill,
@@ -15,6 +18,7 @@ from azure.search.documents.indexes.models import (
     DocumentIntelligenceLayoutSkillExtractionOptions,
     DocumentIntelligenceLayoutSkillOutputMode,
     DocumentIntelligenceLayoutSkillOutputFormat,
+    IndexingParameters,
     IndexProjectionMode,
     InputFieldMappingEntry,
     OutputFieldMappingEntry,
@@ -335,16 +339,7 @@ class IntegratedVectorizerStrategy(Strategy):
 
         ds_client = self.search_info.create_search_indexer_client()
         ds_container = SearchIndexerDataContainer(name=self.blob_manager.container)
-        # For vision processing with DocumentIntelligenceLayoutSkill, we need special data source config
-        from azure.search.documents.indexes.models import SearchIndexerDataContainer
         
-        # Configure data source to provide raw file data for DocumentIntelligenceLayoutSkill
-        # DocumentIntelligenceLayoutSkill requires the raw binary file data, not parsed content
-        ds_container = SearchIndexerDataContainer(
-            name=self.blob_manager.container
-        )
-        
-        # Configure data source connection to provide raw file data for DocumentIntelligenceLayoutSkill
         data_source_connection = SearchIndexerDataSourceConnection(
             name=self.data_source_name,
             type=SearchIndexerDataSourceType.AZURE_BLOB,
@@ -387,13 +382,24 @@ class IntegratedVectorizerStrategy(Strategy):
         elif self.document_action == DocumentAction.RemoveAll:
             await self.blob_manager.remove_blob()
 
-        # Create an indexer
+        # Create an indexer with parameters for DocumentIntelligenceLayoutSkill
+        indexing_parameters = None
+        if self.enable_vision:
+            # Configure indexing parameters to enable raw file data access for DocumentIntelligenceLayoutSkill
+            indexing_parameters = IndexingParameters(
+                allow_skillset_to_read_file_data=True,  # CRITICAL: This enables /document/file_data
+                data_to_extract=BlobIndexerDataToExtract.CONTENT_AND_METADATA,
+                parsing_mode=BlobIndexerParsingMode.DEFAULT,
+                image_action=BlobIndexerImageAction.GENERATE_NORMALIZED_IMAGES
+            )
+        
         indexer = SearchIndexer(
             name=self.indexer_name,
             description="Indexer to index documents and generate embeddings",
             skillset_name=self.skillset_name,
             target_index_name=self.search_info.index_name,
             data_source_name=self.data_source_name,
+            parameters=indexing_parameters,
         )
 
         indexer_client = self.search_info.create_search_indexer_client()
