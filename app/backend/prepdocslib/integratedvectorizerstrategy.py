@@ -8,6 +8,7 @@ from azure.search.documents.indexes._generated.models import (
 from azure.search.documents.indexes.models import (
     AzureOpenAIEmbeddingSkill,
     ChatCompletionSkill,
+    DefaultCognitiveServicesAccount,
     DocumentIntelligenceLayoutSkill,
     DocumentIntelligenceLayoutSkillChunkingProperties,
     DocumentIntelligenceLayoutSkillChunkingUnit,
@@ -85,7 +86,6 @@ class IntegratedVectorizerStrategy(Strategy):
 
         if self.enable_vision:
             # Use DocumentIntelligenceLayoutSkill for vision mode
-            # Create the skill and manually clear the markdown_header_depth for text format
             doc_intel_skill = DocumentIntelligenceLayoutSkill(
                 name="document-cracking-skill",
                 description="Document Layout skill for document cracking",
@@ -132,10 +132,8 @@ class IntegratedVectorizerStrategy(Strategy):
             skills.append(text_embedding_skill)
 
             # Chat completion skill for image verbalization using GPT-4V
-            # Use GPT4V deployment if available, otherwise fall back to regular ChatGPT deployment
             vision_deployment = os.getenv("AZURE_OPENAI_GPT4V_DEPLOYMENT") or os.getenv("AZURE_OPENAI_CHATGPT_DEPLOYMENT")
             
-            # Construct the Azure OpenAI Chat Completions endpoint
             chat_completion_uri = f"https://{self.embeddings.open_ai_service}.openai.azure.com/openai/deployments/{vision_deployment}/chat/completions?api-version={os.getenv('AZURE_OPENAI_API_VERSION', '2024-06-01')}"
             
             chat_skill = ChatCompletionSkill(
@@ -143,7 +141,6 @@ class IntegratedVectorizerStrategy(Strategy):
                 description="GenAI Prompt skill for image verbalization",
                 uri=chat_completion_uri,
                 context="/document/normalized_images/*",
-                # Use managed identity for authentication (recommended) or fallback to API key
                 auth_resource_id=f"https://{self.embeddings.open_ai_service}.openai.azure.com",
                 inputs=[
                     InputFieldMappingEntry(
@@ -302,12 +299,22 @@ class IntegratedVectorizerStrategy(Strategy):
         # Images are still processed and verbalized, but not stored separately
         knowledge_store = None
 
+        # Add cognitive services connection for vision processing if enabled
+        cognitive_services_connection = None
+        if self.enable_vision:
+            # Use the default cognitive services account to avoid free tier limitations
+            # This will use the Computer Vision resource deployed in your infrastructure
+            cognitive_services_connection = DefaultCognitiveServicesAccount(
+                description="Azure AI Services connection for document intelligence and vision processing"
+            )
+        
         skillset = SearchIndexerSkillset(
             name=self.skillset_name,
             description="Skillset to chunk documents and generate embeddings",
             skills=skills,
             index_projection=index_projection,
             knowledge_store=knowledge_store,
+            cognitive_services_connection=cognitive_services_connection,
         )
 
         return skillset
@@ -328,6 +335,16 @@ class IntegratedVectorizerStrategy(Strategy):
 
         ds_client = self.search_info.create_search_indexer_client()
         ds_container = SearchIndexerDataContainer(name=self.blob_manager.container)
+        # For vision processing with DocumentIntelligenceLayoutSkill, we need special data source config
+        from azure.search.documents.indexes.models import SearchIndexerDataContainer
+        
+        # Configure data source to provide raw file data for DocumentIntelligenceLayoutSkill
+        # DocumentIntelligenceLayoutSkill requires the raw binary file data, not parsed content
+        ds_container = SearchIndexerDataContainer(
+            name=self.blob_manager.container
+        )
+        
+        # Configure data source connection to provide raw file data for DocumentIntelligenceLayoutSkill
         data_source_connection = SearchIndexerDataSourceConnection(
             name=self.data_source_name,
             type=SearchIndexerDataSourceType.AZURE_BLOB,
