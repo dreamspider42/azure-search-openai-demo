@@ -19,6 +19,7 @@ from azure.search.documents.indexes.models import (
     DocumentIntelligenceLayoutSkillOutputMode,
     DocumentIntelligenceLayoutSkillOutputFormat,
     IndexingParameters,
+    IndexingParametersConfiguration,
     IndexProjectionMode,
     InputFieldMappingEntry,
     OutputFieldMappingEntry,
@@ -303,22 +304,12 @@ class IntegratedVectorizerStrategy(Strategy):
         # Images are still processed and verbalized, but not stored separately
         knowledge_store = None
 
-        # Add cognitive services connection for vision processing if enabled
-        cognitive_services_connection = None
-        if self.enable_vision:
-            # Use the default cognitive services account to avoid free tier limitations
-            # This will use the Computer Vision resource deployed in your infrastructure
-            cognitive_services_connection = DefaultCognitiveServicesAccount(
-                description="Azure AI Services connection for document intelligence and vision processing"
-            )
-        
         skillset = SearchIndexerSkillset(
             name=self.skillset_name,
             description="Skillset to chunk documents and generate embeddings",
             skills=skills,
             index_projection=index_projection,
             knowledge_store=knowledge_store,
-            cognitive_services_connection=cognitive_services_connection,
         )
 
         return skillset
@@ -386,12 +377,14 @@ class IntegratedVectorizerStrategy(Strategy):
         indexing_parameters = None
         if self.enable_vision:
             # Configure indexing parameters to enable raw file data access for DocumentIntelligenceLayoutSkill
-            indexing_parameters = IndexingParameters(
-                allow_skillset_to_read_file_data=True,  # CRITICAL: This enables /document/file_data
-                data_to_extract=BlobIndexerDataToExtract.CONTENT_AND_METADATA,
-                parsing_mode=BlobIndexerParsingMode.DEFAULT,
-                image_action=BlobIndexerImageAction.GENERATE_NORMALIZED_IMAGES
-            )
+            config = IndexingParametersConfiguration()
+            config.allow_skillset_to_read_file_data = True  # CRITICAL: This enables /document/file_data
+            config.data_to_extract = BlobIndexerDataToExtract.CONTENT_AND_METADATA
+            config.parsing_mode = BlobIndexerParsingMode.DEFAULT
+            config.image_action = BlobIndexerImageAction.GENERATE_NORMALIZED_IMAGES
+            config.query_timeout = None  # Workaround: Set to None for azureblob data source
+            
+            indexing_parameters = IndexingParameters(configuration=config)
         
         indexer = SearchIndexer(
             name=self.indexer_name,
