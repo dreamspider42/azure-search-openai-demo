@@ -462,6 +462,7 @@ if __name__ == "__main__":
             search_analyzer_name=os.getenv("AZURE_SEARCH_ANALYZER_NAME"),
             use_acls=use_acls,
             category=args.category,
+            enable_vision=use_gptvision,
         )
     else:
         file_processors = setup_file_processors(

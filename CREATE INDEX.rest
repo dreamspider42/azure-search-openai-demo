@@ -1,0 +1,133 @@
+### Create an index
+POST {{baseUrl}}/indexes?api-version=2025-05-01-preview   HTTP/1.1
+  Content-Type: application/json
+  api-key: {{apiKey}}
+
+{
+    "name": "doc-intelligence-image-verbalization-index",
+    "fields": [
+        {
+            "name": "content_id",
+            "type": "Edm.String",
+            "retrievable": true,
+            "key": true,
+            "analyzer": "keyword"
+        },
+        {
+            "name": "text_document_id",
+            "type": "Edm.String",
+            "searchable": false,
+            "filterable": true,
+            "retrievable": true,
+            "stored": true,
+            "sortable": false,
+            "facetable": false
+        },          
+        {
+            "name": "document_title",
+            "type": "Edm.String",
+            "searchable": true
+        },
+        {
+            "name": "image_document_id",
+            "type": "Edm.String",
+            "filterable": true,
+            "retrievable": true
+        },
+        {
+            "name": "content_text",
+            "type": "Edm.String",
+            "searchable": true,
+            "retrievable": true
+        },
+        {
+            "name": "content_embedding",
+            "type": "Collection(Edm.Single)",
+            "dimensions": 3072,
+            "searchable": true,
+            "retrievable": true,
+            "vectorSearchProfile": "hnsw"
+        },
+        {
+            "name": "content_path",
+            "type": "Edm.String",
+            "searchable": false,
+            "retrievable": true
+        },
+        {
+            "name": "offset",
+            "type": "Edm.String",
+            "searchable": false,
+            "retrievable": true
+        },
+        {
+            "name": "location_metadata",
+            "type": "Edm.ComplexType",
+            "fields": [
+                {
+                "name": "page_number",
+                "type": "Edm.Int32",
+                "searchable": false,
+                "retrievable": true
+                },
+                {
+                "name": "bounding_polygons",
+                "type": "Edm.String",
+                "searchable": false,
+                "retrievable": true,
+                "filterable": false,
+                "sortable": false,
+                "facetable": false
+                }
+            ]
+        }         
+    ],
+    "vectorSearch": {
+        "profiles": [
+            {
+                "name": "hnsw",
+                "algorithm": "defaulthnsw",
+                "vectorizer": "{{vectorizer}}"
+            }
+        ],
+        "algorithms": [
+            {
+                "name": "defaulthnsw",
+                "kind": "hnsw",
+                "hnswParameters": {
+                    "m": 4,
+                    "efConstruction": 400,
+                    "metric": "cosine"
+                }
+            }
+        ],
+        "vectorizers": [
+            {
+              "name": "{{vectorizer}}",
+              "kind": "azureOpenAI",    
+              "azureOpenAIParameters": {
+                "resourceUri": "{{openAIResourceUri}}",
+                "deploymentId": "text-embedding-3-large",
+                "apiKey": "{{openAIKey}}",
+                "modelName": "text-embedding-3-large"
+              }
+            }
+        ]
+    },
+    "semantic": {
+        "defaultConfiguration": "semanticconfig",
+        "configurations": [
+            {
+                "name": "semanticconfig",
+                "prioritizedFields": {
+                    "titleField": {
+                        "fieldName": "document_title"
+                    },
+                    "prioritizedContentFields": [
+                    ],
+                    "prioritizedKeywordsFields": []
+                }
+            }
+        ]
+    }
+}

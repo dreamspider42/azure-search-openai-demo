@@ -1,4 +1,5 @@
 import logging
+import os
 from typing import Optional
 
 from azure.search.documents.indexes._generated.models import (
@@ -6,6 +7,13 @@ from azure.search.documents.indexes._generated.models import (
 )
 from azure.search.documents.indexes.models import (
     AzureOpenAIEmbeddingSkill,
+    ChatCompletionSkill,
+    DocumentIntelligenceLayoutSkill,
+    DocumentIntelligenceLayoutSkillChunkingProperties,
+    DocumentIntelligenceLayoutSkillChunkingUnit,
+    DocumentIntelligenceLayoutSkillExtractionOptions,
+    DocumentIntelligenceLayoutSkillOutputMode,
+    DocumentIntelligenceLayoutSkillOutputFormat,
     IndexProjectionMode,
     InputFieldMappingEntry,
     OutputFieldMappingEntry,
@@ -17,6 +25,7 @@ from azure.search.documents.indexes.models import (
     SearchIndexerIndexProjectionSelector,
     SearchIndexerIndexProjectionsParameters,
     SearchIndexerSkillset,
+    ShaperSkill,
     SplitSkill,
 )
 
@@ -47,6 +56,7 @@ class IntegratedVectorizerStrategy(Strategy):
         search_analyzer_name: Optional[str] = None,
         use_acls: bool = False,
         category: Optional[str] = None,
+        enable_vision: bool = False,
     ):
 
         self.list_file_strategy = list_file_strategy
@@ -60,6 +70,7 @@ class IntegratedVectorizerStrategy(Strategy):
         self.use_acls = use_acls
         self.category = category
         self.search_info = search_info
+        self.enable_vision = enable_vision
         prefix = f"{self.search_info.index_name}-{self.search_field_name_embedding}"
         self.skillset_name = f"{prefix}-skillset"
         self.indexer_name = f"{prefix}-indexer"
@@ -69,61 +80,234 @@ class IntegratedVectorizerStrategy(Strategy):
         """
         Create a skillset for the indexer to chunk documents and generate embeddings
         """
+        skills = []
+        selectors = []
 
-        split_skill = SplitSkill(
-            name="split-skill",
-            description="Split skill to chunk documents",
-            text_split_mode="pages",
-            context="/document",
-            maximum_page_length=2048,
-            page_overlap_length=20,
-            inputs=[
-                InputFieldMappingEntry(name="text", source="/document/content"),
-            ],
-            outputs=[OutputFieldMappingEntry(name="textItems", target_name="pages")],
-        )
+        if self.enable_vision:
+            # Use DocumentIntelligenceLayoutSkill for vision mode
+            # Create the skill and manually clear the markdown_header_depth for text format
+            doc_intel_skill = DocumentIntelligenceLayoutSkill(
+                name="document-cracking-skill",
+                description="Document Layout skill for document cracking",
+                context="/document",
+                output_mode=DocumentIntelligenceLayoutSkillOutputMode.ONE_TO_MANY,
+                output_format=DocumentIntelligenceLayoutSkillOutputFormat.TEXT,
+                extraction_options=[
+                    DocumentIntelligenceLayoutSkillExtractionOptions.IMAGES,
+                    DocumentIntelligenceLayoutSkillExtractionOptions.LOCATION_METADATA
+                ],
+                chunking_properties=DocumentIntelligenceLayoutSkillChunkingProperties(
+                    unit=DocumentIntelligenceLayoutSkillChunkingUnit.CHARACTERS,
+                    maximum_length=2000,
+                    overlap_length=200
+                ),
+                inputs=[
+                    InputFieldMappingEntry(name="file_data", source="/document/file_data")
+                ],
+                outputs=[
+                    OutputFieldMappingEntry(name="text_sections", target_name="text_sections"),
+                    OutputFieldMappingEntry(name="normalized_images", target_name="normalized_images")
+                ]
+            )
+            # Clear the markdown_header_depth parameter for text format to avoid conflicts
+            doc_intel_skill.markdown_header_depth = None
+            skills.append(doc_intel_skill)
 
-        embedding_skill = AzureOpenAIEmbeddingSkill(
-            name="embedding-skill",
-            description="Skill to generate embeddings via Azure OpenAI",
-            context="/document/pages/*",
-            resource_url=f"https://{self.embeddings.open_ai_service}.openai.azure.com",
-            deployment_name=self.embeddings.open_ai_deployment,
-            model_name=self.embeddings.open_ai_model_name,
-            dimensions=self.embeddings.open_ai_dimensions,
-            inputs=[
-                InputFieldMappingEntry(name="text", source="/document/pages/*"),
-            ],
-            outputs=[OutputFieldMappingEntry(name="embedding", target_name="vector")],
-        )
+            # Text embedding skill
+            text_embedding_skill = AzureOpenAIEmbeddingSkill(
+                name="text-embedding-skill",
+                description="Azure Open AI Embedding skill for text",
+                context="/document/text_sections/*",
+                resource_url=f"https://{self.embeddings.open_ai_service}.openai.azure.com",
+                deployment_name=self.embeddings.open_ai_deployment,
+                model_name=self.embeddings.open_ai_model_name,
+                dimensions=self.embeddings.open_ai_dimensions,
+                inputs=[
+                    InputFieldMappingEntry(name="text", source="/document/text_sections/*/content")
+                ],
+                outputs=[
+                    OutputFieldMappingEntry(name="embedding", target_name="text_vector")
+                ]
+            )
+            skills.append(text_embedding_skill)
+
+            # Chat completion skill for image verbalization using GPT-4V
+            # Use GPT4V deployment if available, otherwise fall back to regular ChatGPT deployment
+            vision_deployment = os.getenv("AZURE_OPENAI_GPT4V_DEPLOYMENT") or os.getenv("AZURE_OPENAI_CHATGPT_DEPLOYMENT")
+            
+            # Construct the Azure OpenAI Chat Completions endpoint
+            chat_completion_uri = f"https://{self.embeddings.open_ai_service}.openai.azure.com/openai/deployments/{vision_deployment}/chat/completions?api-version={os.getenv('AZURE_OPENAI_API_VERSION', '2024-06-01')}"
+            
+            chat_skill = ChatCompletionSkill(
+                name="genAI-prompt-skill",
+                description="GenAI Prompt skill for image verbalization",
+                uri=chat_completion_uri,
+                context="/document/normalized_images/*",
+                # Use managed identity for authentication (recommended) or fallback to API key
+                auth_resource_id=f"https://{self.embeddings.open_ai_service}.openai.azure.com",
+                inputs=[
+                    InputFieldMappingEntry(
+                        name="systemMessage",
+                        source="='You are tasked with generating concise, accurate descriptions of images, figures, diagrams, or charts in documents. The goal is to capture the key information and meaning conveyed by the image without including extraneous details like style, colors, visual aesthetics, or size.\\n\\nInstructions:\\nContent Focus: Describe the core content and relationships depicted in the image.\\n\\nFor diagrams, specify the main elements and how they are connected or interact.\\nFor charts, highlight key data points, trends, comparisons, or conclusions.\\nFor figures or technical illustrations, identify the components and their significance.\\nClarity & Precision: Use concise language to ensure clarity and technical accuracy. Avoid subjective or interpretive statements.\\n\\nAvoid Visual Descriptors: Exclude details about:\\n\\nColors, shading, and visual styles.\\nImage size, layout, or decorative elements.\\nFonts, borders, and stylistic embellishments.\\nContext: If relevant, relate the image to the broader content of the technical document or the topic it supports.'"
+                    ),
+                    InputFieldMappingEntry(
+                        name="userMessage",
+                        source="='Please describe this image.'"
+                    ),
+                    InputFieldMappingEntry(
+                        name="image",
+                        source="/document/normalized_images/*/data"
+                    )
+                ],
+                outputs=[
+                    OutputFieldMappingEntry(name="response", target_name="verbalizedImage")
+                ]
+            )
+            skills.append(chat_skill)
+
+            # Embedding skill for verbalized images
+            image_embedding_skill = AzureOpenAIEmbeddingSkill(
+                name="verbalizedImage-embedding-skill",
+                description="Azure Open AI Embedding skill for verbalized image embedding",
+                context="/document/normalized_images/*",
+                resource_url=f"https://{self.embeddings.open_ai_service}.openai.azure.com",
+                deployment_name=self.embeddings.open_ai_deployment,
+                model_name=self.embeddings.open_ai_model_name,
+                dimensions=self.embeddings.open_ai_dimensions,
+                inputs=[
+                    InputFieldMappingEntry(name="text", source="/document/normalized_images/*/verbalizedImage")
+                ],
+                outputs=[
+                    OutputFieldMappingEntry(name="embedding", target_name="verbalizedImage_vector")
+                ]
+            )
+            skills.append(image_embedding_skill)
+
+            # Shaper skill for image path
+            shaper_skill = ShaperSkill(
+                name="image-path-shaper",
+                context="/document/normalized_images/*",
+                inputs=[
+                    InputFieldMappingEntry(name="normalized_images", source="/document/normalized_images/*"),
+                    InputFieldMappingEntry(
+                        name="imagePath",
+                        source=f"='{self.blob_manager.container}/'+$(/document/normalized_images/*/imagePath)"
+                    )
+                ],
+                outputs=[
+                    OutputFieldMappingEntry(name="output", target_name="new_normalized_images")
+                ]
+            )
+            skills.append(shaper_skill)
+
+            # Text sections projection
+            text_selector = SearchIndexerIndexProjectionSelector(
+                target_index_name=index_name,
+                parent_key_field_name="text_document_id",
+                source_context="/document/text_sections/*",
+                mappings=[
+                    InputFieldMappingEntry(
+                        name=self.search_field_name_embedding,
+                        source="/document/text_sections/*/text_vector"
+                    ),
+                    InputFieldMappingEntry(name="content", source="/document/text_sections/*/content"),
+                    InputFieldMappingEntry(name="location_metadata", source="/document/text_sections/*/locationMetadata"),
+                    InputFieldMappingEntry(name="sourcepage", source="/document/metadata_storage_name"),
+                    InputFieldMappingEntry(name="sourcefile", source="/document/metadata_storage_name"),
+                    InputFieldMappingEntry(name="storageUrl", source="/document/metadata_storage_path"),
+                    InputFieldMappingEntry(name="parent_id", source="/document/metadata_storage_name")
+                ]
+            )
+            selectors.append(text_selector)
+
+            # Image sections projection
+            image_selector = SearchIndexerIndexProjectionSelector(
+                target_index_name=index_name,
+                parent_key_field_name="image_document_id",
+                source_context="/document/normalized_images/*",
+                mappings=[
+                    InputFieldMappingEntry(name="content", source="/document/normalized_images/*/verbalizedImage"),
+                    InputFieldMappingEntry(
+                        name=self.search_field_name_embedding,
+                        source="/document/normalized_images/*/verbalizedImage_vector"
+                    ),
+                    InputFieldMappingEntry(
+                        name="content_path",
+                        source="/document/normalized_images/*/new_normalized_images/imagePath"
+                    ),
+                    InputFieldMappingEntry(name="location_metadata", source="/document/normalized_images/*/locationMetadata"),
+                    InputFieldMappingEntry(name="sourcepage", source="/document/metadata_storage_name"),
+                    InputFieldMappingEntry(name="sourcefile", source="/document/metadata_storage_name"),
+                    InputFieldMappingEntry(name="storageUrl", source="/document/metadata_storage_path"),
+                    InputFieldMappingEntry(name="parent_id", source="/document/metadata_storage_name")
+                ]
+            )
+            selectors.append(image_selector)
+
+        else:
+            # Original implementation for non-vision mode
+            split_skill = SplitSkill(
+                name="split-skill",
+                description="Split skill to chunk documents",
+                text_split_mode="pages",
+                context="/document",
+                maximum_page_length=2048,
+                page_overlap_length=20,
+                inputs=[
+                    InputFieldMappingEntry(name="text", source="/document/content"),
+                ],
+                outputs=[OutputFieldMappingEntry(name="textItems", target_name="pages")],
+            )
+            skills.append(split_skill)
+
+            embedding_skill = AzureOpenAIEmbeddingSkill(
+                name="embedding-skill",
+                description="Skill to generate embeddings via Azure OpenAI",
+                context="/document/pages/*",
+                resource_url=f"https://{self.embeddings.open_ai_service}.openai.azure.com",
+                deployment_name=self.embeddings.open_ai_deployment,
+                model_name=self.embeddings.open_ai_model_name,
+                dimensions=self.embeddings.open_ai_dimensions,
+                inputs=[
+                    InputFieldMappingEntry(name="text", source="/document/pages/*"),
+                ],
+                outputs=[OutputFieldMappingEntry(name="embedding", target_name="vector")],
+            )
+            skills.append(embedding_skill)
+
+            text_selector = SearchIndexerIndexProjectionSelector(
+                target_index_name=index_name,
+                parent_key_field_name="parent_id",
+                source_context="/document/pages/*",
+                mappings=[
+                    InputFieldMappingEntry(name="content", source="/document/pages/*"),
+                    InputFieldMappingEntry(name="sourcepage", source="/document/metadata_storage_name"),
+                    InputFieldMappingEntry(name="sourcefile", source="/document/metadata_storage_name"),
+                    InputFieldMappingEntry(name="storageUrl", source="/document/metadata_storage_path"),
+                    InputFieldMappingEntry(
+                        name=self.search_field_name_embedding, source="/document/pages/*/vector"
+                    ),
+                ],
+            )
+            selectors.append(text_selector)
 
         index_projection = SearchIndexerIndexProjection(
-            selectors=[
-                SearchIndexerIndexProjectionSelector(
-                    target_index_name=index_name,
-                    parent_key_field_name="parent_id",
-                    source_context="/document/pages/*",
-                    mappings=[
-                        InputFieldMappingEntry(name="content", source="/document/pages/*"),
-                        InputFieldMappingEntry(name="sourcepage", source="/document/metadata_storage_name"),
-                        InputFieldMappingEntry(name="sourcefile", source="/document/metadata_storage_name"),
-                        InputFieldMappingEntry(name="storageUrl", source="/document/metadata_storage_path"),
-                        InputFieldMappingEntry(
-                            name=self.search_field_name_embedding, source="/document/pages/*/vector"
-                        ),
-                    ],
-                ),
-            ],
+            selectors=selectors,
             parameters=SearchIndexerIndexProjectionsParameters(
                 projection_mode=IndexProjectionMode.SKIP_INDEXING_PARENT_DOCUMENTS
             ),
         )
 
+        # Note: Knowledge store removed to avoid container creation issues
+        # Images are still processed and verbalized, but not stored separately
+        knowledge_store = None
+
         skillset = SearchIndexerSkillset(
             name=self.skillset_name,
             description="Skillset to chunk documents and generate embeddings",
-            skills=[split_skill, embedding_skill],
+            skills=skills,
             index_projection=index_projection,
+            knowledge_store=knowledge_store,
         )
 
         return skillset
@@ -137,7 +321,7 @@ class IntegratedVectorizerStrategy(Strategy):
             use_int_vectorization=True,
             embeddings=self.embeddings,
             field_name_embedding=self.search_field_name_embedding,
-            search_images=False,
+            search_images=self.enable_vision,
         )
 
         await search_manager.create_index()
@@ -152,7 +336,19 @@ class IntegratedVectorizerStrategy(Strategy):
             data_deletion_detection_policy=NativeBlobSoftDeleteDeletionDetectionPolicy(),
         )
 
-        await ds_client.create_or_update_data_source_connection(data_source_connection)
+        try:
+            await ds_client.create_or_update_data_source_connection(data_source_connection)
+        except Exception as e:
+            if "conflicting update" in str(e).lower():
+                logger.warning(f"Data source {self.data_source_name} already exists with conflicting configuration. Attempting to delete and recreate...")
+                try:
+                    await ds_client.delete_data_source_connection(self.data_source_name)
+                    await ds_client.create_data_source_connection(data_source_connection)
+                except Exception as retry_error:
+                    logger.error(f"Failed to recreate data source: {retry_error}")
+                    raise
+            else:
+                raise
 
         embedding_skillset = await self.create_embedding_skill(self.search_info.index_name)
         await ds_client.create_or_update_skillset(embedding_skillset)

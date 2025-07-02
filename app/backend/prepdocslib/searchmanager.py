@@ -7,6 +7,7 @@ from azure.search.documents.indexes.models import (
     AzureOpenAIVectorizer,
     AzureOpenAIVectorizerParameters,
     BinaryQuantizationCompression,
+    ComplexField,
     HnswAlgorithmConfiguration,
     HnswParameters,
     KnowledgeAgent,
@@ -146,7 +147,8 @@ class SearchManager:
                     stored=False,
                 )
 
-            if self.search_images:
+            # For non-integrated vectorization with images (traditional approach)
+            if self.search_images and not self.use_int_vectorization:
                 image_vector_algorithm = HnswAlgorithmConfiguration(
                     name="image_hnsw_config",
                     parameters=HnswParameters(metric="cosine"),
@@ -227,6 +229,55 @@ class SearchManager:
                 if self.use_int_vectorization:
                     logger.info("Including parent_id field for integrated vectorization support in new index")
                     fields.append(SearchableField(name="parent_id", type="Edm.String", filterable=True))
+                    
+                    # Add vision-specific fields for integrated vectorization with images
+                    if self.search_images and self.use_int_vectorization:
+                        logger.info("Including vision-specific fields for integrated vectorization")
+                        # Add text_document_id and image_document_id for separate parent keys
+                        fields.append(SimpleField(
+                            name="text_document_id",
+                            type="Edm.String",
+                            searchable=False,
+                            filterable=True,
+                            retrievable=True,
+                            stored=True,
+                            sortable=False,
+                            facetable=False
+                        ))
+                        fields.append(SimpleField(
+                            name="image_document_id",
+                            type="Edm.String",
+                            filterable=True,
+                            retrievable=True
+                        ))
+                        # Add content_path for image paths
+                        fields.append(SimpleField(
+                            name="content_path",
+                            type="Edm.String",
+                            searchable=False,
+                            retrievable=True
+                        ))
+                        # Add location_metadata as complex field
+                        fields.append(ComplexField(
+                            name="location_metadata",
+                            fields=[
+                                SimpleField(
+                                    name="page_number",
+                                    type="Edm.Int32",
+                                    searchable=False,
+                                    retrievable=True
+                                ),
+                                SimpleField(
+                                    name="bounding_polygons",
+                                    type="Edm.String",
+                                    searchable=False,
+                                    retrievable=True,
+                                    filterable=False,
+                                    sortable=False,
+                                    facetable=False
+                                )
+                            ]
+                        ))
 
                 vectorizers: list[VectorSearchVectorizer] = []
                 vector_search_profiles = []
@@ -247,7 +298,8 @@ class SearchManager:
                     vector_algorithms.append(text_vector_algorithm)
                     vector_compressions.append(text_vector_compression)
 
-                if image_embedding_field:
+                # Only add separate image embedding field for non-integrated vectorization
+                if image_embedding_field and not self.use_int_vectorization:
                     logger.info("Including %s field for image vectors in new index", image_embedding_field.name)
                     fields.append(image_embedding_field)
                     if image_vector_search_profile is None or image_vector_algorithm is None:
@@ -322,7 +374,8 @@ class SearchManager:
                     existing_index.vector_search.compressions.append(text_vector_compression)
                     await search_index_client.create_or_update_index(existing_index)
 
-                if image_embedding_field and not any(field.name == "imageEmbedding" for field in existing_index.fields):
+                # Only add separate image embedding field for non-integrated vectorization
+                if image_embedding_field and not self.use_int_vectorization and not any(field.name == "imageEmbedding" for field in existing_index.fields):
                     logger.info("Adding %s field for image embeddings", image_embedding_field.name)
                     existing_index.fields.append(image_embedding_field)
                     if image_vector_search_profile is None or image_vector_algorithm is None:
@@ -336,6 +389,65 @@ class SearchManager:
                         existing_index.vector_search.algorithms = []
                     existing_index.vector_search.algorithms.append(image_vector_algorithm)
                     await search_index_client.create_or_update_index(existing_index)
+
+                # Add vision-specific fields for integrated vectorization if they don't exist
+                if self.search_images and self.use_int_vectorization:
+                    fields_to_add = []
+                    
+                    if not any(field.name == "text_document_id" for field in existing_index.fields):
+                        fields_to_add.append(SimpleField(
+                            name="text_document_id",
+                            type="Edm.String",
+                            searchable=False,
+                            filterable=True,
+                            retrievable=True,
+                            stored=True,
+                            sortable=False,
+                            facetable=False
+                        ))
+                    
+                    if not any(field.name == "image_document_id" for field in existing_index.fields):
+                        fields_to_add.append(SimpleField(
+                            name="image_document_id",
+                            type="Edm.String",
+                            filterable=True,
+                            retrievable=True
+                        ))
+                    
+                    if not any(field.name == "content_path" for field in existing_index.fields):
+                        fields_to_add.append(SimpleField(
+                            name="content_path",
+                            type="Edm.String",
+                            searchable=False,
+                            retrievable=True
+                        ))
+                    
+                    if not any(field.name == "location_metadata" for field in existing_index.fields):
+                        fields_to_add.append(ComplexField(
+                            name="location_metadata",
+                            fields=[
+                                SimpleField(
+                                    name="page_number",
+                                    type="Edm.Int32",
+                                    searchable=False,
+                                    retrievable=True
+                                ),
+                                SimpleField(
+                                    name="bounding_polygons",
+                                    type="Edm.String",
+                                    searchable=False,
+                                    retrievable=True,
+                                    filterable=False,
+                                    sortable=False,
+                                    facetable=False
+                                )
+                            ]
+                        ))
+                    
+                    if fields_to_add:
+                        logger.info("Adding vision-specific fields to existing index %s", self.search_info.index_name)
+                        existing_index.fields.extend(fields_to_add)
+                        await search_index_client.create_or_update_index(existing_index)
 
                 if existing_index.semantic_search:
                     if not existing_index.semantic_search.default_configuration_name:
