@@ -35,6 +35,7 @@ async def main():
                     redirect_uris=[
                         "http://localhost:50505/redirect",
                         "http://localhost:5173/redirect",
+                        "https://psychic-rotary-phone-6qww4r67p9hr5q5-50505.app.github.dev/redirect",
                         f"{uri}/redirect",
                     ]
                 ),
